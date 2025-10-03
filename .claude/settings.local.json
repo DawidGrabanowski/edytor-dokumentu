@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "CopilotKit MCP"
+  ],
+  "enableAllProjectMcpServers": true
+}

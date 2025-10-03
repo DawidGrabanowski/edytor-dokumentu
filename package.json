@@ -1,0 +1,32 @@
+{
+  "name": "my-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3000 --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --port 3000 --hostname 0.0.0.0",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@blocknote/ariakit": "^0.40.0",
+    "@blocknote/core": "^0.40.0",
+    "@blocknote/react": "^0.40.0",
+    "@copilotkit/react-core": "^1.10.5",
+    "@copilotkit/react-ui": "^1.10.5",
+    "@copilotkit/runtime": "^1.10.5",
+    "@copilotkit/sdk-js": "^1.10.5",
+    "next": "^15.2.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.15"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.11",
+    "@types/react": "^19.0.12",
+    "@types/react-dom": "^19.0.4",
+    "eslint": "^9.23.0",
+    "eslint-config-next": "^15.2.3",
+    "typescript": "^5.8.2"
+  }
+}
