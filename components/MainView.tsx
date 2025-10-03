@@ -1,28 +1,81 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useCopilotReadable, useCopilotAction } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
-import { Block } from "@blocknote/core";
+import { BlockNoteEditor } from "@blocknote/core";
 import dynamic from "next/dynamic";
 import "@copilotkit/react-ui/styles.css";
+
+import {
+  EditorDocument,
+  buildMarkdownForBlockType,
+  createBlockFromMarkdownSnippet,
+  ensureBlockIds,
+  extractPlainTextFromBlock,
+  serializeBlocksToMarkdown,
+} from "../lib/document";
 
 const Editor = dynamic(() => import("./Editor"), { ssr: false });
 
 export default function MainView() {
-  // Stan dokumentu
-  const [content, setContent] = useState<Block[]>([]);
+  const [documentState, setDocumentState] = useState<EditorDocument>({
+    blocks: [],
+    markdown: "",
+  });
+  const editorRef = useRef<BlockNoteEditor<any, any, any> | null>(null);
 
-  // Udostępnianie treści dokumentu asystentowi
+  const setEditor = useCallback((editor: BlockNoteEditor<any, any, any>) => {
+    editorRef.current = editor;
+  }, []);
+
+  const computeMarkdown = useCallback(
+    (blocks: EditorDocument["blocks"]) => {
+      const editor = editorRef.current;
+      if (!editor) {
+        return documentState.markdown;
+      }
+      return serializeBlocksToMarkdown(blocks, editor);
+    },
+    [documentState.markdown]
+  );
+
+  const applyBlocksUpdate = useCallback(
+    (updater: (blocks: EditorDocument["blocks"]) => EditorDocument["blocks"]) => {
+      setDocumentState((prev) => {
+        const editor = editorRef.current;
+        if (!editor) {
+          return prev;
+        }
+
+        const updatedBlocks = ensureBlockIds(updater(prev.blocks));
+        const markdown = serializeBlocksToMarkdown(updatedBlocks, editor);
+
+        return {
+          blocks: updatedBlocks,
+          markdown,
+        };
+      });
+    },
+    []
+  );
+
   useCopilotReadable({
-    description: "Zawartość dokumentu edytora - wszystkie bloki tekstu",
-    value: content,
+    description: "Zawartość dokumentu edytora wraz z reprezentacją markdown",
+    value: {
+      blocks: documentState.blocks,
+      markdown: documentState.markdown,
+      metadata: {
+        blockCount: documentState.blocks.length,
+        blockIds: documentState.blocks.map((block) => block.id),
+      },
+    },
   });
 
-  // Akcja: Wstawianie nowego bloku tekstu
   useCopilotAction({
     name: "insertBlock",
-    description: "Wstawia nowy blok tekstu w dokumencie na określonej pozycji. Jeśli pozycja nie jest podana, dodaje na końcu.",
+    description:
+      "Wstawia nowy blok tekstu w dokumencie na określonej pozycji. Jeśli pozycja nie jest podana, dodaje na końcu.",
     parameters: [
       {
         name: "text",
@@ -39,36 +92,39 @@ export default function MainView() {
       {
         name: "position",
         type: "number",
-        description: "Pozycja (indeks), na której wstawić blok. Jeśli nie podano, wstawi na końcu.",
+        description:
+          "Pozycja (indeks), na której wstawić blok. Jeśli nie podano, wstawi na końcu.",
         required: false,
       },
     ],
     handler: async ({ text, type = "paragraph", position }) => {
-      const newBlock: Block = {
-        id: crypto.randomUUID(),
-        type: type as any,
-        content: text,
-        children: [],
-      };
+      const editor = editorRef.current;
+      if (!editor) {
+        throw new Error("Edytor nie jest jeszcze gotowy. Spróbuj ponownie, gdy pojawi się interfejs edytora.");
+      }
 
-      setContent((prevContent) => {
-        const newContent = [...prevContent];
-        if (position !== undefined && position >= 0 && position <= newContent.length) {
-          newContent.splice(position, 0, newBlock);
+      applyBlocksUpdate((prevBlocks) => {
+        const newBlocks = [...prevBlocks];
+        const markdownSnippet = buildMarkdownForBlockType(text, type);
+        const newBlock = createBlockFromMarkdownSnippet(markdownSnippet, editor);
+
+        if (position !== undefined && position >= 0 && position <= newBlocks.length) {
+          newBlocks.splice(position, 0, newBlock);
         } else {
-          newContent.push(newBlock);
+          newBlocks.push(newBlock);
         }
-        return newContent;
+
+        return newBlocks;
       });
 
-      return `Wstawiono blok "${text}" na pozycji ${position ?? content.length}`;
+      return `Wstawiono blok "${text}" na pozycji ${position ?? documentState.blocks.length}`;
     },
   });
 
-  // Akcja: Edycja istniejącego bloku
   useCopilotAction({
     name: "updateBlock",
-    description: "Aktualizuje treść lub typ istniejącego bloku na podstawie jego pozycji (indeksu).",
+    description:
+      "Aktualizuje treść lub typ istniejącego bloku na podstawie jego pozycji (indeksu).",
     parameters: [
       {
         name: "position",
@@ -90,30 +146,39 @@ export default function MainView() {
       },
     ],
     handler: async ({ position, text, type }) => {
-      setContent((prevContent) => {
-        if (position < 0 || position >= prevContent.length) {
-          throw new Error(`Nieprawidłowa pozycja: ${position}. Dokument ma ${prevContent.length} bloków.`);
+      const editor = editorRef.current;
+      if (!editor) {
+        throw new Error("Edytor nie jest jeszcze gotowy. Spróbuj ponownie, gdy pojawi się interfejs edytora.");
+      }
+
+      applyBlocksUpdate((prevBlocks) => {
+        if (position < 0 || position >= prevBlocks.length) {
+          throw new Error(
+            `Nieprawidłowa pozycja: ${position}. Dokument ma ${prevBlocks.length} bloków.`
+          );
         }
 
-        const newContent = [...prevContent];
-        const block = { ...newContent[position] };
+        const newBlocks = [...prevBlocks];
+        const targetBlock = { ...newBlocks[position] };
 
-        if (text !== undefined) {
-          block.content = text;
-        }
-        if (type !== undefined) {
-          block.type = type as any;
+        if (text !== undefined || type !== undefined) {
+          const baseText = text ?? extractPlainTextFromBlock(targetBlock);
+          const markdownSnippet = buildMarkdownForBlockType(
+            baseText,
+            type ?? (targetBlock.type as string)
+          );
+          const updatedBlock = createBlockFromMarkdownSnippet(markdownSnippet, editor);
+          updatedBlock.id = targetBlock.id;
+          newBlocks[position] = updatedBlock;
         }
 
-        newContent[position] = block;
-        return newContent;
+        return newBlocks;
       });
 
       return `Zaktualizowano blok na pozycji ${position}`;
     },
   });
 
-  // Akcja: Usuwanie bloku
   useCopilotAction({
     name: "deleteBlock",
     description: "Usuwa blok tekstu z dokumentu na podstawie jego pozycji (indeksu).",
@@ -126,21 +191,22 @@ export default function MainView() {
       },
     ],
     handler: async ({ position }) => {
-      setContent((prevContent) => {
-        if (position < 0 || position >= prevContent.length) {
-          throw new Error(`Nieprawidłowa pozycja: ${position}. Dokument ma ${prevContent.length} bloków.`);
+      applyBlocksUpdate((prevBlocks) => {
+        if (position < 0 || position >= prevBlocks.length) {
+          throw new Error(
+            `Nieprawidłowa pozycja: ${position}. Dokument ma ${prevBlocks.length} bloków.`
+          );
         }
 
-        const newContent = [...prevContent];
-        newContent.splice(position, 1);
-        return newContent;
+        const newBlocks = [...prevBlocks];
+        newBlocks.splice(position, 1);
+        return newBlocks;
       });
 
       return `Usunięto blok na pozycji ${position}`;
     },
   });
 
-  // Akcja: Zastąpienie całej zawartości dokumentu
   useCopilotAction({
     name: "replaceAllContent",
     description: "Zastępuje całą zawartość dokumentu nowymi blokami tekstu.",
@@ -148,35 +214,47 @@ export default function MainView() {
       {
         name: "blocks",
         type: "object[]",
-        description: "Tablica nowych bloków. Każdy blok powinien mieć 'text' i opcjonalnie 'type' (domyślnie 'paragraph')",
+        description:
+          "Tablica nowych bloków. Każdy blok powinien mieć 'text' i opcjonalnie 'type' (domyślnie 'paragraph')",
         required: true,
       },
     ],
     handler: async ({ blocks }) => {
-      const newBlocks: Block[] = blocks.map((b: any) => ({
-        id: crypto.randomUUID(),
-        type: (b.type || "paragraph") as any,
-        content: b.text || "",
-        children: [],
-      }));
+      const editor = editorRef.current;
+      if (!editor) {
+        throw new Error("Edytor nie jest jeszcze gotowy. Spróbuj ponownie, gdy pojawi się interfejs edytora.");
+      }
 
-      setContent(newBlocks);
+      const newBlocks = ensureBlockIds(
+        blocks.map((b: any) =>
+          createBlockFromMarkdownSnippet(buildMarkdownForBlockType(b.text || "", b.type), editor)
+        )
+      );
+
+      const markdown = computeMarkdown(newBlocks);
+
+      setDocumentState({
+        blocks: newBlocks,
+        markdown,
+      });
+
       return `Zastąpiono zawartość dokumentu ${newBlocks.length} nowymi blokami`;
     },
   });
 
-  const handleEditorChange = (blocks: Block[]) => {
-    setContent(blocks);
-  };
+  const handleEditorChange = useCallback((doc: EditorDocument) => {
+    setDocumentState({
+      blocks: ensureBlockIds(doc.blocks),
+      markdown: doc.markdown,
+    });
+  }, []);
 
   return (
     <div className="flex h-screen w-full overflow-hidden">
-      {/* Edytor na pełny ekran */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <Editor content={content} onChange={handleEditorChange} />
+        <Editor document={documentState} onChange={handleEditorChange} onEditorReady={setEditor} />
       </div>
 
-      {/* Asystent CopilotKit w sidebarze */}
       <CopilotSidebar
         instructions={`Jesteś pomocnym asystentem edytora tekstu. Możesz pomóc użytkownikowi w edycji dokumentu poprzez:
 
